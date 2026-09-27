@@ -1,132 +1,59 @@
 # Real-Time Respiratory Phase Classification
 
-Source code, data processing tools and experimental materials developed for the master's thesis:
+Source code, measurement recordings, trained models, and supporting tools developed for the master's thesis:
 
 **Modeling the Respiratory System with Artificial Neural Networks**
 
-Author: **Jakub Kabat**
+Author: **Jakub Kabat**  
 Gdańsk University of Technology
 
 ## Overview
 
-This project implements a complete system for real-time recognition of respiratory cycle phases from a strain-sensing belt signal.
+This project implements a system for real-time recognition of respiratory cycle phases from a strain-sensing belt signal.
 
-The system classifies four respiratory phases:
+The system distinguishes four respiratory phases:
 
 - inhalation,
 - exhalation,
 - post-inhalation retention,
 - post-exhalation retention.
 
-A lightweight one-dimensional convolutional neural network processes consecutive signal windows. The model output is additionally processed using sequential constraints describing the allowable order of respiratory phases.
+A lightweight one-dimensional convolutional neural network processes consecutive signal windows. The network output is additionally processed using sequential constraints describing the allowable order of respiratory phases.
 
-The trained model is exported to ONNX and executed directly on an Android mobile device using ONNX Runtime. The mobile application was developed in Flutter, while the model training and evaluation pipeline was implemented in Python.
+The model was trained in Python with PyTorch, exported to ONNX, and integrated with a Flutter mobile application using ONNX Runtime. All inference is performed locally on the mobile device.
 
-All real-time processing is performed locally on the mobile device and does not require a remote server.
-
----
-
-## Quick Start
-
-### Requirements
-
-| Component | Version |
-|---|---|
-| Python | 3.13 |
-| PyTorch | 2.11.0 |
-| ONNX | 1.21.0 |
-| Flutter | see `mobile_app/pubspec.yaml` |
-| Target platform | Android 16 (tested on Samsung Galaxy S24 Ultra) |
-
-Python dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-### Train the model
-
-```bash
-cd training
-python train_model.py            # ~36 s on CPU
-python export_onnx.py            # writes models/breathing_model.onnx
-```
-
-### Reproduce a single experiment
-
-```bash
-cd analysis/experiments
-python ablacja_postprocessingu.py ../../data/recordings/pomiar2.txt \
-                                  ../../models/breathing_model.pt
-```
-
-See [`docs/experiments.md`](docs/experiments.md) for the full mapping between
-scripts and the tables and figures presented in the thesis.
-
-### Build the mobile application
-
-```bash
-cd mobile_app
-flutter pub get
-flutter run --release
-```
-
-The application also provides a test mode that replays a recorded signal file,
-so the full processing pipeline can be exercised without the physical belt.
+The mechanical construction of the strain-sensing belt and the measurement electronics were developed as part of a parallel master's thesis. The present project focuses on the mobile application, signal processing, machine learning pipeline, sequential post-processing, and experimental evaluation.
 
 ---
 
-## System Architecture
+## Repository Structure
 
-The system consists of three main parts:
+```text
+.
+├── data/                   # Recordings collected by the author
+├── mobile_app/             # Flutter mobile application
+├── models/                 # Trained PyTorch and exported ONNX models
+├── python/                 # Training, labeling, analysis and utility scripts
+│   ├── analytics.py
+│   ├── autolabel2.py
+│   ├── chart_viewer.py
+│   ├── metronom.py
+│   ├── train_model.py
+│   └── viterbi.py
+└── README.md
+```
 
-1. **Measurement module**
-   - strain-sensing respiratory belt,
-   - ESP32 microcontroller,
-   - Bluetooth Low Energy communication.
-
-2. **Mobile application**
-   - BLE data acquisition,
-   - packet integrity verification,
-   - signal calibration and preprocessing,
-   - neural network inference,
-   - sequential post-processing,
-   - respiratory phase visualization,
-   - respiratory cycle and respiratory rate estimation,
-   - session storage and export.
-
-3. **Python training and evaluation pipeline**
-   - dataset preparation,
-   - automatic and manual labeling,
-   - generation of training windows,
-   - model training,
-   - ONNX export,
-   - classification evaluation,
-   - experimental analysis.
-
-The mechanical construction of the strain-sensing belt and its measurement electronics were developed as part of a parallel master's thesis. This project focuses primarily on the software, signal processing, machine learning and mobile application components.
+The `data/` directory contains only recordings collected by the author for the purposes of the thesis. The external dataset used as the main source of training recordings is **not redistributed in this repository**.
 
 ---
 
 ## Respiratory Phase Classification
 
-The classifier is based on a lightweight 1D convolutional neural network referred to in the project as `BreathingCNN`.
+The classifier is a lightweight 1D convolutional neural network referred to in the project as `BreathingCNN`.
 
-The default model uses an input window of 30 consecutive signal samples, corresponding to approximately 3 seconds of respiratory signal.
+The default input consists of **30 consecutive samples**, corresponding to approximately **3 seconds** of respiratory signal.
 
-The network consists of:
-
-- four one-dimensional convolutional layers,
-- batch normalization,
-- ReLU activation,
-- max pooling,
-- dropout,
-- global average pooling,
-- fully connected classification layers.
-
-The model contains **28,708 trainable parameters**.
-
-The network produces four output scores corresponding to the respiratory phases:
+The network contains **28,708 trainable parameters** and classifies each input window into one of four classes:
 
 | Index | Phase |
 |---:|---|
@@ -135,98 +62,137 @@ The network produces four output scores corresponding to the respiratory phases:
 | 2 | Post-inhalation retention |
 | 3 | Post-exhalation retention |
 
+The trained network is stored in PyTorch format and is also exported to ONNX for use in the mobile application.
+
 ---
 
 ## Sequential Post-Processing
 
-Each signal window is initially classified independently.
+Each signal window is initially classified independently by the neural network.
 
-To improve temporal consistency, the classifier output is processed using a Viterbi-based decoder with a predefined transition matrix.
+The classifier output is then processed using a Viterbi-based decoder with a predefined transition matrix. The matrix describes which transitions between respiratory phases are allowed or forbidden. These transition constraints are defined manually and are not learned from the training dataset.
 
-The transition matrix does not contain transition probabilities learned from the dataset. Instead, it defines which transitions between respiratory phases are allowed or forbidden.
+A minimum phase-duration filter is also used to suppress very short phase detections.
 
-A minimum phase duration filter is additionally applied to suppress very short phase detections.
-
-The current implementation contains several limitations related to real-time sequential processing. These are described in the thesis and were identified during end-to-end validation.
-
----
-
-## Respiratory Cycle Detection
-
-Respiratory rate is derived from the classifier output rather than from the raw signal. Counting every transition into the inhalation phase, however, overestimates the number of breaths: an inhalation performed in two movements separated by a shallow signal dip is counted twice. This follows directly from the transition matrix, which forbids a direct return from post-inhalation retention to inhalation, so the pause must be closed by another phase.
-
-The system therefore accepts a transition into inhalation as the start of a new cycle only when it occurs at a stretch level close to that of the previously accepted cycle starts. The rule is implemented in a single shared module (`cycle_detector.dart`) used by the real-time rate display, the chart markers and the stored session statistics, which keeps all three consistent.
-
----
-
-## Signal Processing
-
-The raw sensor signal depends on belt placement, body shape and sensor characteristics and therefore requires calibration before being used by the classifier.
-
-The processing pipeline includes:
-
-- conversion of raw sensor values to a normalized stretch scale,
-- determination of the operating range,
-- resting-level calibration,
-- compensation for slow baseline drift,
-- preparation of fixed-length classifier input windows.
-
-Two approaches to baseline handling were investigated:
-
-- drift compensation based on local minimum detection,
-- rolling calibration used during continuous measurements.
-
-Only one of them is active at a time, since both correct the same quantity.
-
-The signal level is intentionally preserved because it provides information required to distinguish post-inhalation and post-exhalation retention.
-
----
-
-## Bluetooth Low Energy
-
-The measurement module communicates with the mobile application using Bluetooth Low Energy.
-
-The BLE service contains separate characteristics for:
-
-- measurement data,
-- control messages,
-- calibration parameters.
-
-The application implements packet sequence numbering, checksum verification, retransmission requests, connection quality monitoring and automatic reconnection.
-
-**Note:** the measurement module used in the experiments reported in the thesis transmits raw sensor values without sequence numbers or checksums. The integrity mechanisms listed above are present in the application but remain inactive with that module, and packet-loss statistics are therefore not reported in the thesis.
+The implementation and its limitations are described in detail in the thesis. In particular, end-to-end testing showed that the current real-time processing scheme can still produce transitions that are inconsistent with the intended phase sequence.
 
 ---
 
 ## Mobile Application
 
-The mobile application was implemented in **Flutter**.
+The mobile application is implemented in **Flutter**.
 
-Main functions include:
+Its main functions include:
 
-- BLE device discovery and connection,
-- respiratory signal acquisition,
-- calibration,
+- Bluetooth Low Energy communication with the measurement module,
+- acquisition of respiratory signal samples,
+- signal calibration and preprocessing,
 - ONNX Runtime inference,
-- real-time respiratory phase visualization,
-- respiratory cycle detection,
-- respiratory rate estimation,
-- session recording,
-- result export,
-- test mode using previously recorded signals.
+- sequential post-processing,
+- visualization of the respiratory signal and detected phases,
+- respiratory cycle and respiratory rate estimation,
+- recording and export of measurement sessions,
+- test mode based on previously recorded data.
 
-The neural network is executed locally on the phone. No cloud inference is required.
+The neural network runs directly on the mobile device and does not require cloud inference.
+
+The complete Flutter project required to build the application is available in:
+
+```text
+mobile_app/
+```
+
+To run it:
+
+```bash
+cd mobile_app
+flutter pub get
+flutter run
+```
+
+To build a release APK:
+
+```bash
+flutter build apk --release
+```
+
+---
+
+## Python Tools
+
+The Python scripts used during development and evaluation are located in:
+
+```text
+python/
+```
+
+The main files are:
+
+- `train_model.py` — training of the 1D CNN classifier,
+- `autolabel2.py` — automatic phase labeling using the threshold-based rule,
+- `viterbi.py` — sequential decoding and phase-transition constraints,
+- `analytics.py` — analysis and evaluation of recorded data and model outputs,
+- `chart_viewer.py` — visualization of respiratory recordings,
+- `metronom.py` — utility used for metronome-guided respiratory recordings.
+
+Some scripts were created specifically for the experiments described in the thesis and may require local file paths or small adjustments before being run in a different environment.
+
+---
+
+## Models
+
+The `models/` directory contains:
+
+- the trained PyTorch model (`.pt`),
+- the exported ONNX model (`.onnx`).
+
+The ONNX model is the version used by the Flutter application for mobile inference.
+
+The final model contains **28,708 trainable parameters** and the exported ONNX file occupies approximately **116 kB**.
+
+---
+
+## Data
+
+The `data/` directory contains measurement recordings collected by the author during the development and evaluation of the system.
+
+These include recordings used for:
+
+- computational performance measurements,
+- end-to-end system validation,
+- manual phase annotation,
+- evaluation of respiratory rate estimation,
+- experiments with additional manually labeled training material.
+
+Only recordings collected by the author are included here.
+
+### External training dataset
+
+The original training material was based on the publicly available dataset:
+
+> Szymański, J., Szefler, M., Karski, K., Krawczak, F., Jankowski, D.  
+> *Parallel datasets for classification of respiratory rhythm phases.*  
+> Scientific Data, 12, 346 (2025).  
+> DOI: 10.1038/s41597-025-04625-5
+
+Dataset repository:
+
+https://doi.org/10.34808/ray2-4g53
+
+The external dataset is not copied into this repository and remains subject to its original terms of use.
+
+The recordings from that dataset were labeled again for this project using the threshold-based procedure implemented in `python/autolabel2.py`.
 
 ---
 
 ## Model Training
 
-The model training pipeline was implemented using Python and PyTorch.
+The training pipeline was implemented in Python using PyTorch.
 
-The default training configuration includes:
+The default configuration used in the thesis includes:
 
 - input window: 30 samples,
-- training window stride: 3 samples,
+- training stride: 3 samples,
 - batch size: 256,
 - epochs: 40,
 - optimizer: Adam,
@@ -235,138 +201,113 @@ The default training configuration includes:
 - cross-entropy loss,
 - cosine learning-rate schedule.
 
-The training dataset is imbalanced, particularly for post-inhalation retention.
+The training set is imbalanced, particularly for post-inhalation retention. Weighted sampling with replacement is therefore used to reduce the effect of class imbalance.
 
-To reduce the effect of class imbalance, training examples are sampled with replacement using class-dependent weights inversely proportional to class frequency.
+The model can be trained using:
 
----
+```bash
+cd python
+python train_model.py
+```
 
-## Dataset and Labels
-
-The original training material comes from a publicly available dataset of
-respiratory recordings published by Szymański et al. (see *References* below).
-It contains several breathing patterns, including normal, shallow, slow and
-fast breathing, post-inhalation and post-exhalation breath holds, and coughing.
-
-The labels distributed with that dataset were not used. All recordings were
-labeled again with the threshold-based method implemented in this repository,
-which is based on the derivative of a smoothed respiratory signal and on the
-absolute signal level, so that the training data and the recordings made for
-evaluation would be labeled by the same procedure.
-
-**The original dataset is not redistributed here.** It is available from the
-repository linked below, under its own licence. This repository contains the
-scripts needed to convert it into the format used for training.
-
-Recordings made by the author for the purposes of the thesis — including the
-manually annotated training material, the control recording and the recordings
-used for computational and end-to-end measurements — are included in `data/`.
+Depending on the local directory layout, dataset paths may need to be adjusted before training.
 
 ---
 
 ## Evaluation
 
-The system was evaluated at both model and complete-system level.
+The thesis evaluates the system at both model and complete-system level.
 
 The experiments include:
 
 - computational performance on a mobile device,
 - influence of sequential post-processing,
 - comparison with the threshold-based method,
-- influence of classifier input window length,
+- influence of input-window length,
 - influence of manually annotated training data,
 - respiratory rate estimation,
 - end-to-end validation of the mobile processing pipeline.
 
 Because the respiratory phase classes are imbalanced, **macro-F1** is used as the primary classification metric.
 
-Manually annotated recording segments were used as references independent of both the neural network and the threshold-based labeling method.
+Manually annotated recordings were used as independent references for selected experiments.
 
 ---
 
 ## Selected Results
 
-The implemented CNN contains **28,708 parameters**, and the exported ONNX model occupies **113 kB** (116,153 bytes).
+The final CNN contains **28,708 parameters**.
 
-On the tested Android device, the median processing time for one incoming sample was **0.7 ms**, compared with a **100 ms** sampling interval — a margin of more than two orders of magnitude.
+On the tested Samsung Galaxy S24 Ultra, median processing time for one incoming sample was approximately **0.7 ms**, compared with a sampling interval of approximately **100 ms**.
 
-On a manually annotated reference segment, the neural-network-based approach reached **macro-F1 = 0.818**, compared with **0.755** for the threshold-based method, with the largest advantage on post-inhalation retention.
+On a manually annotated reference segment, the neural-network-based method achieved:
 
-Extending the training dataset with 20 minutes of manually annotated recordings of breathing patterns that are difficult for the threshold method increased macro-F1 on a separate control recording from **0.828 to 0.876**. Most of that gain comes from the first five minutes of added material.
+- **macro-F1 = 0.818**
+- threshold-based method: **macro-F1 = 0.755**
 
-For respiratory rate estimation, counting every transition into inhalation overestimated the rate by **1.907 breaths/min**. The cycle detection criterion used in the system reduced the mean error to **0.395 breaths/min** on the same control recording.
+Adding 20 minutes of manually annotated difficult breathing patterns to the training material increased macro-F1 on a separate control recording from **0.828 to 0.876**.
 
-These results should be interpreted together with the limitations described below.
+For respiratory rate estimation, the cycle-detection criterion used in the system reduced the mean error from **1.907 breaths/min** to **0.395 breaths/min** compared with directly counting all transitions into inhalation.
 
 ---
 
 ## Known Limitations
 
-This repository contains a research prototype rather than a production or medical system.
+This repository contains a research prototype developed for a master's thesis.
 
-The main limitations identified during the thesis evaluation include:
+The main limitations identified during the evaluation include:
 
 - limited amount of training and manually annotated data,
-- evaluation involving a limited number of measurement sessions and users,
+- limited number of users and measurement sessions,
 - class imbalance, particularly for post-inhalation retention,
-- differences between the signal characteristics of the original training recordings and later measurements,
-- approximately 1.5 s structural delay caused by the context window,
-- differences between the Python and mobile implementations of some processing steps,
-- limitations of the current state handling in sequential decoding,
-- gradual memory growth observed during longer mobile application sessions.
+- differences between the original training recordings and later measurements,
+- structural delay introduced by the temporal input window,
+- additional delay introduced by phase-duration filtering,
+- small procedural differences between the Python and mobile implementations,
+- limitations of the current real-time sequential decoding procedure,
+- gradual memory growth observed during longer mobile sessions.
 
-The system was not validated as a medical device.
-
-Its outputs should not be interpreted as medical diagnoses.
-
----
-
-## Repository Contents
-
-```text
-.
-├── mobile_app/              # Flutter mobile application
-├── training/                # CNN training pipeline and ONNX export
-├── analysis/
-│   ├── prepare/             # recording preparation and manual labeling tools
-│   ├── experiments/         # scripts producing the thesis results
-│   └── figures/             # figure generation scripts
-├── data/
-│   ├── recordings/          # respiratory signal recordings
-│   ├── labels/              # manual phase and cycle annotations
-│   └── logs/                # inference timing and memory logs
-├── models/                  # trained and exported models
-├── docs/
-│   └── experiments.md       # mapping between scripts and thesis results
-├── LICENSE
-└── README.md
-```
-
-Code comments and script output are partly in Polish, since the thesis is written in Polish. Module and function names are in English.
+The system is **not a medical device** and has not been validated for diagnostic use.
 
 ---
 
-## References
+## Reproducibility Notes
 
-The training dataset used in this work:
+The repository is intended to make the implementation and experimental material used in the thesis publicly available.
 
-> Szymański, J., Szefler, M., Karski, K., Krawczak, F., Jankowski, D.
-> *Parallel datasets for classification of respiratory rhythm phases.*
-> Scientific Data 12, 346 (2025). https://doi.org/10.1038/s41597-025-04625-5
+However, full reproduction of model training requires downloading the external training dataset separately from its original repository.
 
-Dataset repository: https://doi.org/10.34808/ray2-4g53
-
-If you use this code, please cite the thesis:
-
-> Kabat, J. *Modeling the Respiratory System with Artificial Neural Networks.*
-> Master's thesis, Gdańsk University of Technology, 2026.
+Some analysis scripts were developed specifically for individual experiments and may contain paths or parameters tied to the original project layout. These can be adjusted as needed.
 
 ---
 
-## Licence
+## Master's Thesis
 
-Code is released under the MIT Licence. Recordings made by the author are
-released under CC BY 4.0. See [`LICENSE`](LICENSE) for details.
+This repository accompanies the master's thesis:
 
-The externally sourced dataset described above is **not** covered by this
-licence and is not redistributed in this repository.
+**Modeling the Respiratory System with Artificial Neural Networks**
+
+Polish title:
+
+**Zastosowanie sztucznych sieci neuronowych w modelowaniu układu oddechowego**
+
+Author: **Jakub Kabat**  
+Gdańsk University of Technology
+
+The repository contains the source code, models, and measurement recordings used during the development and evaluation of the system.
+
+---
+
+## Disclaimer
+
+This project was developed for research and academic purposes.
+
+It is **not a medical device**. Respiratory phase classifications and respiratory rate estimates produced by the system must not be interpreted as medical diagnoses.
+
+---
+
+## License
+
+Add the selected software license here.
+
+If the source code is released under the MIT License, include a `LICENSE` file in the repository. Measurement recordings can be distributed under a separate license if desired.
